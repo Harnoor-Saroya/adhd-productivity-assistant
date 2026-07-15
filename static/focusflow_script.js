@@ -24,6 +24,7 @@ const state = {
 // INIT
 // ──────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
+  loadSavedTheme();
   loadTasks();
   loadProgress();
   
@@ -325,21 +326,37 @@ function focusOnTask(btn) {
   const taskId    = card.dataset.id;
   const taskTitle = card.dataset.title;
 
+  // Get task's estimated minutes from state
+  const task     = state.tasks.find(t => t.id === taskId);
+  const taskMins = task ? (task.estimated_minutes || 25) : 25;
+
+  // Update timer to match task duration
+  if (!state.timer.running) {
+    state.timer.duration  = taskMins * 60;
+    state.timer.remaining = taskMins * 60;
+    state.timer.isBreak   = false;
+    updateTimerDisplay();
+    updateRing(1.0);
+    document.getElementById("timerStatus").textContent = "Ready";
+
+    // Deactivate mode tabs since we're using a custom duration
+    document.querySelectorAll(".mode-tab").forEach(b => b.classList.remove("active"));
+  }
+
   state.timer.focusTaskId    = taskId;
   state.timer.focusTaskTitle = taskTitle;
 
-  document.getElementById("focusTaskName").textContent = taskTitle;
+  document.getElementById("focusTaskName").textContent = `${taskTitle} (${taskMins} min)`;
 
   // Scroll to timer
   document.getElementById("timerCard").scrollIntoView({ behavior: "smooth", block: "start" });
-  showToast(`Focusing on: ${taskTitle} 🎯`);
+  showToast(`Timer set to ${taskMins} min for: ${taskTitle} 🎯`);
 
   // Highlight active task
   document.querySelectorAll(".task-card").forEach(c => c.style.outline = "none");
-  card.style.outline      = "2px solid var(--amber)";
+  card.style.outline       = "2px solid var(--amber)";
   card.style.outlineOffset = "2px";
 }
-
 // ──────────────────────────────────────────────
 // AI: "NOW WHAT SHOULD I DO?"
 // ──────────────────────────────────────────────
@@ -595,3 +612,207 @@ function escapeHtml(str) {
 function capitalize(str) {
   return str ? str.charAt(0).toUpperCase() + str.slice(1) : "";
 }
+
+// ──────────────────────────────────────────────
+// THEME TOGGLE (Dark / Light Mode)
+// ──────────────────────────────────────────────
+function toggleTheme() {
+  const html   = document.documentElement;
+  const btn    = document.getElementById('themeToggle');
+  const isDark = html.getAttribute('data-theme') === 'dark';
+
+  if (isDark) {
+    html.setAttribute('data-theme', 'light');
+    btn.textContent = '☀️';
+    localStorage.setItem('focusflow-theme', 'light');
+  } else {
+    html.setAttribute('data-theme', 'dark');
+    btn.textContent = '🌙';
+    localStorage.setItem('focusflow-theme', 'dark');
+  }
+}
+
+function loadSavedTheme() {
+  const saved = localStorage.getItem('focusflow-theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', saved);
+  const btn = document.getElementById('themeToggle');
+  if (btn) btn.textContent = saved === 'light' ? '☀️' : '🌙';
+}
+
+// ──────────────────────────────────────────────
+// AI CHAT ASSISTANT
+// ──────────────────────────────────────────────
+const chatState = {
+  open:    false,
+  history: [],   // { role: "user"|"assistant", content: "..." }
+  typing:  false
+};
+
+// Toggle chat panel open/closed
+function toggleChat() {
+  const panel = document.getElementById("chatPanel");
+  const fab   = document.getElementById("chatFab");
+  const unread = document.getElementById("chatUnread");
+
+  chatState.open = !chatState.open;
+
+  if (chatState.open) {
+    panel.classList.remove("hidden");
+    unread.classList.add("hidden");
+    document.getElementById("chatInput").focus();
+    scrollChatToBottom();
+  } else {
+    panel.classList.add("hidden");
+  }
+}
+
+// Send a suggestion chip message
+function sendSuggestion(btn) {
+  const text = btn.textContent.trim();
+  document.getElementById("chatInput").value = text;
+  // Hide suggestions after one is picked
+  document.getElementById("chatSuggestions").style.display = "none";
+  sendChatMessage();
+}
+
+// Main send function
+async function sendChatMessage() {
+  const input   = document.getElementById("chatInput");
+  const sendBtn = document.getElementById("chatSendBtn");
+  const message = input.value.trim();
+
+  if (!message || chatState.typing) return;
+
+  input.value = "";
+
+  // Add user message to UI + history
+  appendChatMessage("user", message);
+  chatState.history.push({ role: "user", content: message });
+
+  // Show typing indicator
+  chatState.typing = true;
+  sendBtn.disabled = true;
+  document.getElementById("chatStatus").textContent = "Typing...";
+  const typingId = appendTypingIndicator();
+
+  try {
+    // Build context string from current tasks
+    const pendingTasks = state.tasks
+      .filter(t => !t.completed)
+      .slice(0, 5)
+      .map(t => `- ${t.title} (${t.priority === 3 ? "high" : t.priority === 2 ? "medium" : "low"} priority)`)
+      .join("\n");
+
+    const contextNote = pendingTasks
+      ? `\n\n[User's current pending tasks:\n${pendingTasks}]`
+      : "";
+
+    const res  = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message:  message + contextNote,
+        history:  chatState.history.slice(-10)  // Last 10 messages for context
+      })
+    });
+
+    const data = await res.json();
+    removeTypingIndicator(typingId);
+
+    if (res.ok) {
+      appendChatMessage("ai", data.reply);
+      chatState.history.push({ role: "assistant", content: data.reply });
+    } else {
+      appendChatMessage("ai", "Sorry, I had trouble responding. Try again! 🙏");
+    }
+  } catch (err) {
+    removeTypingIndicator(typingId);
+    appendChatMessage("ai", "Network error — is Flask still running? 🔌");
+  } finally {
+    chatState.typing = false;
+    sendBtn.disabled = false;
+    document.getElementById("chatStatus").textContent = "Online • Ask me anything";
+  }
+}
+
+// Append a message bubble to the chat
+function appendChatMessage(role, text) {
+  const container = document.getElementById("chatMessages");
+
+  const msg    = document.createElement("div");
+  msg.className = `chat-msg ${role}`;
+
+  const avatar = document.createElement("span");
+  avatar.className = "msg-avatar";
+  avatar.textContent = role === "ai" ? "🧠" : "🙋";
+
+  const bubble = document.createElement("div");
+  bubble.className = "msg-bubble";
+
+  // Convert line breaks and **bold** markdown to HTML
+  const formatted = escapeHtml(text)
+    .replace(/\n/g, "<br>")
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+  bubble.innerHTML = formatted;
+
+  msg.appendChild(avatar);
+  msg.appendChild(bubble);
+  container.appendChild(msg);
+  scrollChatToBottom();
+}
+
+// Show animated typing dots
+function appendTypingIndicator() {
+  const container = document.getElementById("chatMessages");
+  const id  = "typing-" + Date.now();
+  const msg = document.createElement("div");
+  msg.className = "chat-msg ai typing";
+  msg.id = id;
+  msg.innerHTML = `
+    <span class="msg-avatar">🧠</span>
+    <div class="msg-bubble">
+      <div class="typing-dots">
+        <span></span><span></span><span></span>
+      </div>
+    </div>`;
+  container.appendChild(msg);
+  scrollChatToBottom();
+  return id;
+}
+
+function removeTypingIndicator(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+}
+
+function scrollChatToBottom() {
+  const container = document.getElementById("chatMessages");
+  setTimeout(() => container.scrollTop = container.scrollHeight, 50);
+}
+
+// Clear chat history
+function clearChat() {
+  chatState.history = [];
+  const container = document.getElementById("chatMessages");
+  container.innerHTML = `
+    <div class="chat-msg ai">
+      <span class="msg-avatar">🧠</span>
+      <div class="msg-bubble">
+        <p>Chat cleared! Fresh start. What can I help you with? 😊</p>
+      </div>
+    </div>`;
+  document.getElementById("chatSuggestions").style.display = "flex";
+}
+
+// Allow Enter key to send
+document.addEventListener("DOMContentLoaded", () => {
+  // This runs after the main DOMContentLoaded — attach chat Enter key
+  setTimeout(() => {
+    const chatInput = document.getElementById("chatInput");
+    if (chatInput) {
+      chatInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") sendChatMessage();
+      });
+    }
+  }, 100);
+});

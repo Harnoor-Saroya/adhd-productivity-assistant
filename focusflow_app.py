@@ -2,34 +2,35 @@
 ADHD Productivity Assistant - Flask Backend
 ==========================================
 AI-powered task management and focus tool for ADHD users.
-Uses Google Gemini API for intelligent task breakdown and suggestions.
+Uses OpenAI API for intelligent task breakdown and suggestions.
 """
 
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-import google.generativeai as genai
+from openai import OpenAI
+from dotenv import load_dotenv
 import json
 import uuid
 from datetime import datetime
 import os
-from dotenv import load_dotenv
-load_dotenv()  # Loads variables from .env into os.environ
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
 # ──────────────────────────────────────────────
-# Gemini Client Setup
+# OpenAI Client Setup
 # ──────────────────────────────────────────────
-# Set your API key as an environment variable:
-#   Windows:   set GEMINI_API_KEY=your-key-here
-#   Mac/Linux: export GEMINI_API_KEY="your-key-here"
-# Or replace os.environ.get(...) with your key string directly.
-# Get your free key at: https://aistudio.google.com/app/apikey
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
-gemini_model = genai.GenerativeModel(
-    model_name="gemini-2.0-flash",
-    system_instruction="""You are an ADHD productivity coach and assistant. Your role is to help users with ADHD manage tasks, stay focused, and feel encouraged.
+# Add this to your .env file:
+#   OPENAI_API_KEY=sk-proj-your-key-here
+# Get your key at: https://platform.openai.com/api-keys
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+
+# ──────────────────────────────────────────────
+# PROMPT ENGINEERING FOR ADHD USERS
+# ──────────────────────────────────────────────
+ADHD_SYSTEM_PROMPT = """You are an ADHD productivity coach and assistant. Your role is to help users with ADHD manage tasks, stay focused, and feel encouraged.
 
 STRICT RULES for your responses:
 1. Keep ALL steps SHORT (max 10 words each)
@@ -41,14 +42,45 @@ STRICT RULES for your responses:
 7. Always end with a brief encouragement (1 sentence)
 
 Remember: ADHD brains need clarity, brevity, and dopamine boosts."""
-)
 
 # ──────────────────────────────────────────────
 # In-Memory Storage (replace with DB in production)
 # ──────────────────────────────────────────────
 tasks_db = []
-sessions_db = []  # Focus session history
+sessions_db = []
 progress_db = {"completed": 0, "total_focus_minutes": 0, "streak": 0}
+
+
+# ──────────────────────────────────────────────
+# HELPER — call OpenAI cleanly
+# ──────────────────────────────────────────────
+def ask_ai(prompt, max_tokens=500, temperature=0.7):
+    """
+    Send a prompt to OpenAI and return the response text.
+    Always uses the shared ADHD system prompt.
+    """
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": ADHD_SYSTEM_PROMPT},
+            {"role": "user",   "content": prompt}
+        ],
+        max_tokens=max_tokens,
+        temperature=temperature
+    )
+    return response.choices[0].message.content.strip()
+
+
+def parse_json_response(text):
+    """
+    Safely parse JSON from AI response.
+    Handles cases where the model wraps output in markdown code blocks.
+    """
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+    return json.loads(text)
 
 
 # ──────────────────────────────────────────────
@@ -74,19 +106,19 @@ def get_tasks():
 def add_task():
     """Add a new task to the list."""
     data = request.get_json()
-    
+
     if not data or not data.get("title"):
         return jsonify({"error": "Task title is required"}), 400
 
     task = {
-        "id": str(uuid.uuid4()),
-        "title": data["title"],
-        "priority": data.get("priority", 2),  # 1=low, 2=medium, 3=high
+        "id":                str(uuid.uuid4()),
+        "title":             data["title"],
+        "priority":          data.get("priority", 2),   # 1=low, 2=medium, 3=high
         "estimated_minutes": data.get("estimated_minutes", 25),
-        "steps": [],
-        "completed": False,
-        "created_at": datetime.now().isoformat(),
-        "tag": data.get("tag", "general"),
+        "steps":             [],
+        "completed":         False,
+        "created_at":        datetime.now().isoformat(),
+        "tag":               data.get("tag", "general"),
     }
 
     tasks_db.append(task)
@@ -98,12 +130,12 @@ def complete_task(task_id):
     """Mark a task as completed."""
     for task in tasks_db:
         if task["id"] == task_id:
-            task["completed"] = True
+            task["completed"]    = True
             task["completed_at"] = datetime.now().isoformat()
             progress_db["completed"] += 1
             return jsonify({
-                "task": task,
-                "message": "Amazing work! 🌟 Task crushed!",
+                "task":     task,
+                "message":  "Amazing work! 🌟 Task crushed!",
                 "progress": progress_db
             })
     return jsonify({"error": "Task not found"}), 404
@@ -126,20 +158,13 @@ def delete_task(task_id):
 def break_task():
     """
     Use AI to break a task into ADHD-friendly micro-steps.
-    
-    Request Body:
-        { "task": "Write my biology essay" }
-    
-    Response:
-        {
-          "steps": ["📖 Open notes doc", "✍️ Write intro paragraph", ...],
-          "encouragement": "You've got this!",
-          "estimated_minutes": 25
-        }
+
+    Request:  { "task": "Write my biology essay" }
+    Response: { "steps": [...], "encouragement": "...", "estimated_minutes": 25 }
     """
-    data = request.get_json()
+    data       = request.get_json()
     task_title = data.get("task", "").strip()
-    
+
     if not task_title:
         return jsonify({"error": "Task description is required"}), 400
 
@@ -160,36 +185,28 @@ Rules:
 - estimated_minutes should be realistic"""
 
     try:
-        response = gemini_model.generate_content(prompt)
-        response_text = response.text.strip()
-        
-        # Clean up if model wraps in markdown code blocks
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0].strip()
-        
-        result = json.loads(response_text)
-        
-        # Update task steps in DB if task_id provided
+        raw    = ask_ai(prompt, max_tokens=500)
+        result = parse_json_response(raw)
+
+        # Save steps to task in DB if task_id provided
         task_id = data.get("task_id")
         if task_id:
             for task in tasks_db:
                 if task["id"] == task_id:
-                    task["steps"] = result.get("steps", [])
+                    task["steps"]             = result.get("steps", [])
                     task["estimated_minutes"] = result.get("estimated_minutes", 25)
                     break
-        
+
         return jsonify(result)
 
     except json.JSONDecodeError:
-        # Fallback: return raw text split into steps
-        lines = [l.strip() for l in response_text.split("\n") if l.strip()]
+        # Fallback: split raw text into lines
+        lines = [l.strip() for l in raw.split("\n") if l.strip()]
         return jsonify({
-            "steps": lines[:6],
-            "encouragement": "You can do this, one step at a time! 💪",
+            "steps":             lines[:6],
+            "encouragement":     "You can do this, one step at a time! 💪",
             "estimated_minutes": 25,
-            "difficulty": "medium"
+            "difficulty":        "medium"
         })
     except Exception as e:
         return jsonify({"error": f"AI service error: {str(e)}"}), 500
@@ -200,24 +217,24 @@ Rules:
 @app.route("/api/suggest-next", methods=["GET"])
 def suggest_next():
     """
-    AI picks the best task to do right now based on context.
-    Considers: priority, time of day, task length, completion history.
+    AI picks the best task to work on right now.
+    Considers priority, time of day, and task length.
     """
-    pending_tasks = [t for t in tasks_db if not t["completed"]]
-    
-    if not pending_tasks:
+    pending = [t for t in tasks_db if not t["completed"]]
+
+    if not pending:
         return jsonify({
             "suggestion": None,
-            "message": "🎉 All tasks complete! Take a well-deserved break.",
+            "message":    "🎉 All tasks complete! Take a well-deserved break.",
             "motivation": "You crushed it today! Seriously impressive."
         })
 
-    hour = datetime.now().hour
+    hour         = datetime.now().hour
     time_context = "morning" if hour < 12 else "afternoon" if hour < 17 else "evening"
-    
+
     task_list = "\n".join([
         f"- [{t['priority']} priority] {t['title']} (~{t['estimated_minutes']}min)"
-        for t in pending_tasks[:8]  # Limit to avoid huge prompts
+        for t in pending[:8]
     ])
 
     prompt = f"""It's {time_context} ({hour}:00). Help an ADHD user pick ONE task to start right now.
@@ -234,49 +251,48 @@ Return ONLY a JSON object (no markdown):
 }}"""
 
     try:
-        response = gemini_model.generate_content(prompt)
-        response_text = response.text.strip()
-        if "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0].strip()
-            if response_text.startswith("json"):
-                response_text = response_text[4:].strip()
-        
-        result = json.loads(response_text)
-        
+        raw    = ask_ai(prompt, max_tokens=300)
+        result = parse_json_response(raw)
+
         # Attach full task object
-        for task in pending_tasks:
+        for task in pending:
             if task["title"].lower() in result.get("recommended_task", "").lower():
                 result["task"] = task
                 break
-        
+
         return jsonify(result)
-    
-    except Exception as e:
+
+    except Exception:
         # Fallback: pick highest priority task
-        best_task = max(pending_tasks, key=lambda x: x["priority"])
+        best = max(pending, key=lambda x: x["priority"])
         return jsonify({
-            "task": best_task,
-            "recommended_task": best_task["title"],
-            "reason": "This has your highest priority right now.",
-            "motivation": "Start small — just 5 minutes! 🚀",
-            "start_tip": "Open it up and take one small action."
+            "task":             best,
+            "recommended_task": best["title"],
+            "reason":           "This has your highest priority right now.",
+            "motivation":       "Start small — just 5 minutes! 🚀",
+            "start_tip":        "Open it up and take one small action."
         })
 
 
-# ── 4. MOTIVATION & ENCOURAGEMENT ──
+# ── 4. MOTIVATION ──
 
 @app.route("/api/motivate", methods=["GET"])
 def get_motivation():
     """Return a personalized ADHD-friendly motivation message."""
+    today          = datetime.now().strftime("%Y-%m-%d")
     completed_today = sum(
         1 for t in tasks_db
-        if t.get("completed") and
-        t.get("completed_at", "")[:10] == datetime.now().strftime("%Y-%m-%d")
+        if t.get("completed") and t.get("completed_at", "")[:10] == today
     )
-    
+
+    context = (
+        "Great progress!"    if completed_today > 2
+        else "Just getting started." if completed_today == 0
+        else "Making progress!"
+    )
+
     prompt = f"""Give a short, genuine motivational message for someone with ADHD.
-They've completed {completed_today} tasks today.
-Context: {"Great progress!" if completed_today > 2 else "Just getting started." if completed_today == 0 else "Making progress!"}
+They've completed {completed_today} tasks today. Context: {context}
 
 Return ONLY a JSON object:
 {{
@@ -286,17 +302,14 @@ Return ONLY a JSON object:
 }}"""
 
     try:
-        response = gemini_model.generate_content(prompt)
-        text = response.text.strip()
-        if "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
-            if text.startswith("json"): text = text[4:].strip()
-        return jsonify(json.loads(text))
+        raw    = ask_ai(prompt, max_tokens=200, temperature=0.8)
+        result = parse_json_response(raw)
+        return jsonify(result)
     except Exception:
         return jsonify({
             "message": "Every step counts. You're making progress even when it doesn't feel like it.",
-            "emoji": "💫",
-            "tip": "Try the 2-minute rule: if it takes under 2 minutes, do it now."
+            "emoji":   "💫",
+            "tip":     "Try the 2-minute rule: if it takes under 2 minutes, do it now."
         })
 
 
@@ -304,23 +317,23 @@ Return ONLY a JSON object:
 
 @app.route("/api/sessions", methods=["POST"])
 def log_session():
-    """Log a completed focus session (Pomodoro)."""
-    data = request.get_json()
+    """Log a completed Pomodoro focus session."""
+    data    = request.get_json()
     session = {
-        "id": str(uuid.uuid4()),
+        "id":               str(uuid.uuid4()),
         "duration_minutes": data.get("duration_minutes", 25),
-        "task_id": data.get("task_id"),
-        "task_title": data.get("task_title", "Focus session"),
-        "completed": data.get("completed", True),
-        "timestamp": datetime.now().isoformat()
+        "task_id":          data.get("task_id"),
+        "task_title":       data.get("task_title", "Focus session"),
+        "completed":        data.get("completed", True),
+        "timestamp":        datetime.now().isoformat()
     }
     sessions_db.append(session)
     progress_db["total_focus_minutes"] += session["duration_minutes"]
-    
+
     return jsonify({
-        "session": session,
+        "session":             session,
         "total_focus_minutes": progress_db["total_focus_minutes"],
-        "message": f"🔥 {session['duration_minutes']} minutes of deep focus logged!"
+        "message":             f"🔥 {session['duration_minutes']} minutes of deep focus logged!"
     }), 201
 
 
@@ -328,6 +341,7 @@ def log_session():
 def get_progress():
     """Return overall progress stats."""
     today = datetime.now().strftime("%Y-%m-%d")
+
     completed_today = sum(
         1 for t in tasks_db
         if t.get("completed") and t.get("completed_at", "")[:10] == today
@@ -336,23 +350,86 @@ def get_progress():
         s["duration_minutes"] for s in sessions_db
         if s["timestamp"][:10] == today
     )
-    
+
     return jsonify({
-        "total_tasks": len(tasks_db),
-        "completed_total": progress_db["completed"],
-        "completed_today": completed_today,
-        "pending": len([t for t in tasks_db if not t["completed"]]),
-        "total_focus_minutes": progress_db["total_focus_minutes"],
-        "focus_minutes_today": focus_today,
-        "sessions_count": len(sessions_db)
+        "total_tasks":          len(tasks_db),
+        "completed_total":      progress_db["completed"],
+        "completed_today":      completed_today,
+        "pending":              len([t for t in tasks_db if not t["completed"]]),
+        "total_focus_minutes":  progress_db["total_focus_minutes"],
+        "focus_minutes_today":  focus_today,
+        "sessions_count":       len(sessions_db)
     })
 
+
+
+
+# ── 6. AI CHAT ASSISTANT ──
+
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    """
+    Multi-turn AI chat for ADHD coaching support.
+
+    Request:
+        {
+          "message": "I feel overwhelmed",
+          "history": [
+            {"role": "user",      "content": "..."},
+            {"role": "assistant", "content": "..."}
+          ]
+        }
+    Response:
+        { "reply": "Let's break this down together..." }
+    """
+    data    = request.get_json()
+    message = data.get("message", "").strip()
+    history = data.get("history", [])
+
+    if not message:
+        return jsonify({"error": "Message is required"}), 400
+
+    # Build messages array: system + history + new user message
+    messages = [
+        {
+            "role":    "system",
+            "content": (
+                ADHD_SYSTEM_PROMPT +
+                "\n\nYou are also a conversational coach. Keep replies concise (3-5 sentences max). "
+                "Be warm, practical, and never preachy. If the user seems stressed, acknowledge "
+                "their feelings first before giving advice. Use emojis sparingly but effectively. "
+                "If they share their task list, reference specific tasks in your advice."
+            )
+        }
+    ]
+
+    # Add conversation history (last 10 messages max to control token usage)
+    for msg in history[-10:]:
+        role = msg.get("role", "user")
+        if role in ("user", "assistant"):
+            messages.append({"role": role, "content": msg["content"]})
+
+    # Add the current user message
+    messages.append({"role": "user", "content": message})
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            max_tokens=300,
+            temperature=0.75
+        )
+        reply = response.choices[0].message.content.strip()
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        return jsonify({"error": f"AI error: {str(e)}"}), 500
 
 # ──────────────────────────────────────────────
 # MAIN
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("\n🧠 ADHD Productivity Assistant is running!")
+    print("\n🧠 FocusFlow ADHD Assistant is running!")
     print("📍 Open: http://localhost:5000\n")
     app.run(debug=True, port=5000)

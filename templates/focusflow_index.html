@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -37,6 +37,7 @@
         </div>
       </div>
 
+      <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode" onclick="toggleTheme()">🌙</button>
       <button class="motivate-btn" id="motivateBtn" title="Get motivation">
         ✨ Inspire me
       </button>
@@ -225,6 +226,72 @@
       <div class="task-steps-inline hidden"></div>
     </div>
   </template>
+
+
+  <!-- ═══════════════════════════════════════ -->
+  <!--  AI CHAT ASSISTANT                     -->
+  <!-- ═══════════════════════════════════════ -->
+
+  <!-- Floating button -->
+  <button class="chat-fab" id="chatFab" onclick="toggleChat()" title="Chat with AI Coach">
+    <span class="chat-fab-icon" id="chatFabIcon">💬</span>
+    <span class="chat-fab-label">AI Coach</span>
+    <span class="chat-unread hidden" id="chatUnread">1</span>
+  </button>
+
+  <!-- Chat Panel -->
+  <div class="chat-panel hidden" id="chatPanel">
+
+    <!-- Header -->
+    <div class="chat-header">
+      <div class="chat-header-info">
+        <span class="chat-avatar">🧠</span>
+        <div>
+          <span class="chat-title">ADHD Coach</span>
+          <span class="chat-status" id="chatStatus">Online • Ask me anything</span>
+        </div>
+      </div>
+      <div class="chat-header-actions">
+        <button class="chat-clear-btn" onclick="clearChat()" title="Clear chat">🗑</button>
+        <button class="chat-close-btn" onclick="toggleChat()">✕</button>
+      </div>
+    </div>
+
+    <!-- Messages -->
+    <div class="chat-messages" id="chatMessages">
+      <div class="chat-msg ai">
+        <span class="msg-avatar">🧠</span>
+        <div class="msg-bubble">
+          <p>Hey! I'm your ADHD Coach. I'm here to help you focus, manage tasks, and stay motivated. 💪</p>
+          <p style="margin-top:0.4rem">What's on your mind?</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick Suggestions -->
+    <div class="chat-suggestions" id="chatSuggestions">
+      <button class="suggestion-chip" onclick="sendSuggestion(this)">😰 I'm overwhelmed</button>
+      <button class="suggestion-chip" onclick="sendSuggestion(this)">🚀 Help me start</button>
+      <button class="suggestion-chip" onclick="sendSuggestion(this)">😴 I can't focus</button>
+      <button class="suggestion-chip" onclick="sendSuggestion(this)">🎯 Prioritize tasks</button>
+    </div>
+
+    <!-- Input -->
+    <div class="chat-input-row">
+      <input
+        type="text"
+        id="chatInput"
+        class="chat-input"
+        placeholder="Ask your ADHD coach..."
+        maxlength="500"
+        autocomplete="off"
+      />
+      <button class="chat-send-btn" id="chatSendBtn" onclick="sendChatMessage()">
+        ➤
+      </button>
+    </div>
+
+  </div>
 
   <script src="{{ url_for('static', filename='focusflow_script.js') }}"></script>
 </body>
